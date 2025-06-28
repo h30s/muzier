@@ -1,36 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Tunely - Real-Time Collaborative Music App
+
+> Your Room. Your Queue. Your Music Democracy.
+
+Tunely is a real-time collaborative music application that empowers groups to listen to music together. Think of it as Spotify Group Session meets YouTube meets democracy, built with modern web technologies.
+
+## Features
+
+- **Google Authentication**: Secure sign-in with Google OAuth
+- **Room Creation & Management**: Create rooms with unique codes and invite friends
+- **YouTube Integration**: Add any YouTube video to the shared queue
+- **Democratic Voting**: Vote songs up or down to determine what plays next
+- **Synchronized Playback**: Host controls playback while everyone stays in sync
+- **Real-Time Updates**: Everything updates instantly across all devices
+
+## Tech Stack
+
+- **Framework**: Next.js 14 (App Router, Server Components)
+- **Language**: TypeScript with strict typing
+- **Authentication**: NextAuth.js v5 + Google OAuth
+- **Database**: Supabase (Postgres + Realtime + Edge Functions)
+- **Styling**: Tailwind CSS + shadcn/ui
+- **YouTube API**: YouTube Data API v3 + YouTube Player API
+- **Hosting**: Vercel (Optimized for Edge performance)
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Node.js 18+
+- Supabase account
+- Google OAuth credentials
+- YouTube   API key
+
+### Environment Variables
+
+Create a `.env.local` file in the root directory with the following variables:
+
+```
+# Authentication
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=your-nextauth-secret
+
+# Google OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+
+# YouTube API
+NEXT_PUBLIC_YOUTUBE_API_KEY=your-youtube-api-key
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Database Setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Create a new Supabase project
+2. Run the SQL from `schema.sql` in the Supabase SQL editor
+3. Enable Realtime for the required tables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Installation
 
-## Learn More
+```bash
+# Install dependencies
+npm install
 
-To learn more about Next.js, take a look at the following resources:
+# Run development server
+npm run dev
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Build for production
+npm run build
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# Start production server
+npm start
+```
 
-## Deploy on Vercel
+## Project Structure
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `/app`: Next.js app router pages and layouts
+- `/components`: React components organized by feature
+- `/lib`: Utility functions and type definitions
+  - `/supabase`: Supabase client configuration
+  - `/youtube`: YouTube API utilities
+  - `/types`: TypeScript type definitions
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Usage Flow
+
+1. **Sign In**: Users sign in with Google
+2. **Create or Join**: Create a new room or join with a 6-character code
+3. **Add Songs**: Paste YouTube URLs to add songs to the queue
+4. **Vote**: Everyone votes on songs to determine the play order
+5. **Listen Together**: Host controls playback while everyone stays in sync
+
+## License
+
+This project is licensed under the MIT License.
+
+## Acknowledgements
+
+- [Next.js](https://nextjs.org/)
+- [Supabase](https://supabase.io/)
+- [shadcn/ui](https://ui.shadcn.com/)
+- [YouTube API](https://developers.google.com/youtube/v3)
