@@ -4,8 +4,6 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { createSupabaseClient } from "@/lib/supabase/client";
-import { extractYouTubeVideoId, fetchVideoDetails } from "@/lib/youtube/api";
 
 interface AddSongFormProps {
   roomId: string;
@@ -32,68 +30,23 @@ export function AddSongForm({ roomId, userId }: AddSongFormProps) {
     try {
       setIsLoading(true);
       
-      // Extract video ID from URL
-      const videoId = extractYouTubeVideoId(url);
+      const response = await fetch("/api/songs/add", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url,
+          roomId,
+          userId,
+        }),
+      });
       
-      if (!videoId) {
-        toast({
-          title: "Invalid YouTube URL",
-          description: "Please enter a valid YouTube video URL",
-          variant: "destructive",
-        });
-        return;
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to add song");
       }
-      
-      const supabase = createSupabaseClient();
-      
-      // Check if song already exists in the queue
-      const { data: existingSong } = await supabase
-        .from("songs")
-        .select()
-        .eq("youtube_id", videoId)
-        .eq("room_id", roomId)
-        .eq("is_played", false)
-        .single();
-      
-      if (existingSong) {
-        toast({
-          title: "Song already in queue",
-          description: "This song is already in the queue",
-          variant: "destructive",
-        });
-        return;
-      }
-      
-      // Fetch video details from YouTube API
-      const videoDetails = await fetchVideoDetails(videoId);
-      
-      // Add song to queue
-      const { data: song, error } = await supabase
-        .from("songs")
-        .insert({
-          youtube_id: videoId,
-          room_id: roomId,
-          is_played: false,
-          added_by: userId,
-          title: videoDetails.title,
-          thumbnail: videoDetails.thumbnail,
-          duration: videoDetails.duration,
-        })
-        .select()
-        .single();
-      
-      if (error) {
-        throw new Error(error.message);
-      }
-      
-      // Add initial upvote from the user who added the song
-      await supabase
-        .from("votes")
-        .insert({
-          song_id: song.id,
-          user_id: userId,
-          vote_type: "up",
-        });
       
       toast({
         title: "Song added",
@@ -106,7 +59,7 @@ export function AddSongForm({ roomId, userId }: AddSongFormProps) {
       console.error("Error adding song:", error);
       toast({
         title: "Error adding song",
-        description: "Please try again later",
+        description: error instanceof Error ? error.message : "Please try again later",
         variant: "destructive",
       });
     } finally {

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { createSupabaseClient } from "@/lib/supabase/client";
 import { User, Song } from "@/lib/types";
 import { ChevronUp, ChevronDown, Clock } from "lucide-react";
 
@@ -26,43 +25,53 @@ export function SongQueue({ songs, currentUser, roomId }: SongQueueProps) {
     try {
       setVotingInProgress((prev) => ({ ...prev, [songId]: true }));
       
-      const supabase = createSupabaseClient();
       const song = songs.find((s) => s.id === songId);
       
       if (!song) return;
       
       // If user already voted this way, remove their vote
       if (song.user_vote === voteType) {
-        await supabase
-          .from("votes")
-          .delete()
-          .match({
-            song_id: songId,
-            user_id: currentUser.id,
-          });
+        await fetch(`/api/songs/vote`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            songId,
+            userId: currentUser.id,
+          }),
+        });
         return;
       }
       
       // If user voted the opposite way, update their vote
       if (song.user_vote) {
-        await supabase
-          .from("votes")
-          .update({ vote_type: voteType })
-          .match({
-            song_id: songId,
-            user_id: currentUser.id,
-          });
+        await fetch(`/api/songs/vote`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            songId,
+            userId: currentUser.id,
+            voteType,
+          }),
+        });
         return;
       }
       
       // If user hasn't voted yet, insert a new vote
-      await supabase
-        .from("votes")
-        .insert({
-          song_id: songId,
-          user_id: currentUser.id,
-          vote_type: voteType,
-        });
+      await fetch(`/api/songs/vote`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          songId,
+          userId: currentUser.id,
+          voteType,
+        }),
+      });
     } catch (error) {
       console.error("Error voting:", error);
     } finally {

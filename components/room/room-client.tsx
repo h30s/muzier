@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { User, Room } from "@/lib/types";
+import { User, Room, PlaybackState } from "@/lib/types";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { RoomHeader } from "@/components/room/room-header";
@@ -24,9 +24,39 @@ export function RoomClient({
   isHost 
 }: RoomClientProps) {
   const [songs, setSongs] = useState<any[]>([]);
-  const [playbackState, setPlaybackState] = useState<any>(null);
+  const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null);
   const [currentParticipants, setCurrentParticipants] = useState(participants);
   const { toast } = useToast();
+  
+  // Initialize playback state
+  useEffect(() => {
+    const initializePlaybackState = async () => {
+      try {
+        const response = await fetch("/api/playback/initialize", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            roomId: room.id,
+          }),
+        });
+        
+        if (!response.ok) {
+          const data = await response.json();
+          console.error("Error initializing playback state:", data.error);
+        } else {
+          console.log("Playback state initialized successfully");
+        }
+      } catch (error) {
+        console.error("Error initializing playback state:", error);
+      }
+    };
+    
+    if (isHost) {
+      initializePlaybackState();
+    }
+  }, [room.id, isHost]);
   
   useEffect(() => {
     const supabase = createSupabaseClient();
@@ -64,6 +94,29 @@ export function RoomClient({
       // Sort by votes count (descending)
       processedSongs.sort((a, b) => b.votes_count - a.votes_count);
       setSongs(processedSongs);
+      
+      // If we're the host and there's a song but no current song playing, set the first song as current
+      if (isHost && processedSongs.length > 0 && (!playbackState || !playbackState.current_song_id)) {
+        const firstSong = processedSongs[0];
+        console.log("Setting first song as current:", firstSong.title);
+        
+        try {
+          await fetch("/api/playback", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              roomId: room.id,
+              currentSongId: firstSong.id,
+              currentTime: 0,
+              isPlaying: true,
+            }),
+          });
+        } catch (error) {
+          console.error("Error setting first song as current:", error);
+        }
+      }
     };
     
     // Initial fetch of playback state
@@ -79,6 +132,7 @@ export function RoomClient({
         return;
       }
       
+      console.log("Fetched playback state:", data);
       setPlaybackState(data);
     };
     
@@ -149,7 +203,7 @@ export function RoomClient({
       playbackSubscription.unsubscribe();
       participantSubscription.unsubscribe();
     };
-  }, [room.id, currentUser.id]);
+  }, [room.id, currentUser.id, isHost, playbackState]);
   
   return (
     <div className="min-h-[calc(100vh-4rem)] flex flex-col">
@@ -160,8 +214,8 @@ export function RoomClient({
       
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 p-6">
         <div className="lg:col-span-2 space-y-6">
-          {/* YouTube player (only visible to host) */}
-          {isHost && playbackState && (
+          {/* YouTube player (visible to everyone now for testing) */}
+          {playbackState && (
             <YouTubePlayer 
               playbackState={playbackState}
               roomId={room.id}

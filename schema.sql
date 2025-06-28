@@ -1,6 +1,14 @@
+-- Drop tables in reverse order of dependencies
+DROP TABLE IF EXISTS playback_state CASCADE;
+DROP TABLE IF EXISTS votes CASCADE;
+DROP TABLE IF EXISTS songs CASCADE;
+DROP TABLE IF EXISTS room_participants CASCADE;
+DROP TABLE IF EXISTS rooms CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+
 -- Create users table
-CREATE TABLE users (
-  id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY,
   email TEXT UNIQUE,
   name TEXT,
   image TEXT,
@@ -10,7 +18,7 @@ CREATE TABLE users (
 -- Create rooms table
 CREATE TABLE rooms (
   id TEXT PRIMARY KEY,
-  host_id TEXT REFERENCES users(id),
+  host_id UUID REFERENCES users(id),
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   
@@ -23,7 +31,7 @@ CREATE TABLE rooms (
 -- Create room participants table
 CREATE TABLE room_participants (
   room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
-  user_id TEXT REFERENCES users(id),
+  user_id UUID REFERENCES users(id),
   joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   PRIMARY KEY (room_id, user_id)
 );
@@ -34,7 +42,7 @@ CREATE TABLE songs (
   youtube_id TEXT NOT NULL,
   room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
   is_played BOOLEAN DEFAULT FALSE,
-  added_by TEXT REFERENCES users(id),
+  added_by UUID REFERENCES users(id),
   title TEXT,
   thumbnail TEXT,
   duration INTEGER,
@@ -44,7 +52,7 @@ CREATE TABLE songs (
 -- Create votes table
 CREATE TABLE votes (
   song_id INTEGER REFERENCES songs(id) ON DELETE CASCADE,
-  user_id TEXT REFERENCES users(id),
+  user_id UUID REFERENCES users(id),
   vote_type TEXT CHECK (vote_type IN ('up', 'down')),
   PRIMARY KEY (song_id, user_id)
 );
@@ -53,7 +61,7 @@ CREATE TABLE votes (
 CREATE TABLE playback_state (
   room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
   current_song_id INTEGER REFERENCES songs(id) ON DELETE SET NULL,
-  current_time FLOAT DEFAULT 0,
+  playback_position FLOAT DEFAULT 0,
   is_playing BOOLEAN DEFAULT FALSE
 );
 
@@ -150,6 +158,10 @@ CREATE POLICY "Only room host can update playback state" ON playback_state
       AND rooms.host_id = auth.uid()
     )
   );
+
+-- Users can create rooms
+CREATE POLICY "Users can create rooms" ON rooms
+  FOR INSERT WITH CHECK (auth.uid() = host_id);
 
 -- Create Realtime publication for tables that need real-time updates
 BEGIN;
