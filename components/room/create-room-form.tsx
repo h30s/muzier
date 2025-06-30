@@ -25,7 +25,7 @@ export function CreateRoomForm({ userId }: CreateRoomFormProps) {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ userId }),
+        // No need to send userId anymore as the API will use the session
       });
       
       const data = await response.json();

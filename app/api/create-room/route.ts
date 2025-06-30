@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { auth } from "@/app/api/auth/[...nextauth]/route";
 
 // Generate a random room code
 function generateRoomCode() {
@@ -13,11 +14,14 @@ function generateRoomCode() {
 
 export async function POST(request: Request) {
   try {
-    const { userId } = await request.json();
+    // Use auth() to get the current session instead of relying on passed userId
+    const session = await auth();
     
-    if (!userId) {
-      return NextResponse.json({ error: "User ID is required" }, { status: 400 });
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    
+    const userId = session.user.id;
     
     // Create admin client
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -28,6 +32,31 @@ export async function POST(request: Request) {
     }
     
     const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // Check if user exists in the users table
+    const { data: existingUser, error: userCheckError } = await supabase
+      .from("users")
+      .select("id")
+      .eq("id", userId)
+      .single();
+    
+    // If user doesn't exist, create them
+    if (!existingUser) {
+      const { error: userCreateError } = await supabase
+        .from("users")
+        .insert({
+          id: userId,
+          email: session.user.email,
+          name: session.user.name,
+          image: session.user.image,
+          updated_at: new Date().toISOString(),
+        });
+      
+      if (userCreateError) {
+        console.error("Error creating user:", userCreateError);
+        return NextResponse.json({ error: userCreateError.message }, { status: 500 });
+      }
+    }
     
     // Generate room code
     const roomCode = generateRoomCode();

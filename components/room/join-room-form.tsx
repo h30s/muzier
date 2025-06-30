@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { createSupabaseClient } from "@/lib/supabase/client";
 
 interface JoinRoomFormProps {
   userId: string;
@@ -33,46 +32,23 @@ export function JoinRoomForm({ userId }: JoinRoomFormProps) {
     try {
       setIsLoading(true);
       const formattedCode = roomCode.trim().toUpperCase();
-      const supabase = createSupabaseClient();
       
-      // Check if room exists and is active
-      const { data: roomData, error: roomError } = await supabase
-        .from("rooms")
-        .select()
-        .eq("id", formattedCode)
-        .eq("is_active", true)
-        .single();
+      // Use server-side API endpoint to join the room
+      const response = await fetch('/api/rooms/join', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          roomId: formattedCode,
+          // No need to send userId as the API will use the session
+        }),
+      });
       
-      if (roomError || !roomData) {
-        toast({
-          title: "Room not found",
-          description: "Please check the room code and try again",
-          variant: "destructive",
-        });
-        return;
-      }
+      const data = await response.json();
       
-      // Check if user is already in the room
-      const { data: existingParticipant, error: participantCheckError } = await supabase
-        .from("room_participants")
-        .select()
-        .eq("room_id", formattedCode)
-        .eq("user_id", userId)
-        .single();
-      
-      if (!existingParticipant) {
-        // Add user as participant
-        const { error: participantError } = await supabase
-          .from("room_participants")
-          .insert({
-            room_id: formattedCode,
-            user_id: userId,
-            joined_at: new Date().toISOString(),
-          });
-        
-        if (participantError) {
-          throw new Error(participantError.message);
-        }
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to join room');
       }
       
       // Redirect to room
