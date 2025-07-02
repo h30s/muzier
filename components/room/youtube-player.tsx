@@ -3,173 +3,374 @@
 import { useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { User, PlaybackState, Song } from "@/lib/types";
-import { Play, Pause, SkipForward } from "lucide-react";
+import { PlaybackState, Song } from "@/lib/types";
+import { Play, Pause, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface YouTubePlayerProps {
+  currentSong: {
+    id: number;
+    youtube_id: string;
+    title: string;
+    thumbnail?: string;
+    duration?: number;
+    added_by?: string;
+    is_played?: boolean;
+    created_at?: string;
+    room_id?: string;
+  };
   playbackState: PlaybackState;
-  roomId: string;
-  songs: Song[];
-  currentUser: User;
+  onVideoEnded: () => void;
 }
 
-export function YouTubePlayer({ 
-  playbackState, 
-  roomId, 
-  songs, 
-  currentUser 
+declare global {
+  interface Window {
+    onYouTubeIframeAPIReady: () => void;
+    YT: any;
+  }
+}
+
+export default function YoutubePlayer({
+  currentSong,
+  playbackState,
+  onVideoEnded
 }: YouTubePlayerProps) {
-  const [isPlaying, setIsPlaying] = useState(playbackState.is_playing);
-  const [currentSong, setCurrentSong] = useState<Song | null>(
-    songs.find((s) => s.id === playbackState.current_song_id) || null
-  );
+  // States
+  const [playerReady, setPlayerReady] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  // Refs
+  const playerRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const videoEndedRef = useRef<boolean>(false);
+  const autoplayNextRef = useRef<boolean>(true);
+  
+  // Toast
   const { toast } = useToast();
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  
-  // Update current song when playback state changes
+
+  // Load YouTube API
   useEffect(() => {
-    const newCurrentSong = songs.find((s) => s.id === playbackState.current_song_id) || null;
-    console.log("Current song updated:", newCurrentSong?.title, "ID:", playbackState.current_song_id);
-    setCurrentSong(newCurrentSong);
-    setIsPlaying(playbackState.is_playing);
-  }, [playbackState.current_song_id, songs, playbackState.is_playing]);
-  
-  // Play/pause controls
-  const handlePlayPause = async () => {
-    try {
-      const newIsPlaying = !isPlaying;
-      setIsPlaying(newIsPlaying);
-      
-      await fetch("/api/playback", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          roomId,
-          isPlaying: newIsPlaying,
-        }),
-      });
-      
-      // Try to control the iframe player if possible
-      if (iframeRef.current && iframeRef.current.contentWindow) {
-        const message = newIsPlaying ? 'playVideo' : 'pauseVideo';
-        iframeRef.current.contentWindow.postMessage(`{"event":"command","func":"${message}","args":""}`, '*');
+    // If YouTube API is already loaded
+    if (window.YT) {
+      console.log("YouTube API already loaded");
+      initializePlayer();
+      return;
+    }
+    
+    // Create and load the script
+    const tag = document.createElement('script');
+    tag.src = "https://www.youtube.com/iframe_api";
+    
+    // Set callback for when API is ready
+    window.onYouTubeIframeAPIReady = initializePlayer;
+    
+    // Add script to page
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    
+    // Cleanup
+    return () => {
+      if (playerRef.current) {
+        try {
+          playerRef.current.destroy();
+        } catch (e) {
+          console.error("Error destroying YouTube player:", e);
+        }
       }
-    } catch (error) {
-      console.error("Error updating playback state:", error);
-      toast({
-        title: "Error",
-        description: "Failed to update playback state",
-        variant: "destructive",
-      });
+    };
+  }, []);
+
+  // Initialize player
+  const initializePlayer = () => {
+    if (!containerRef.current || playerRef.current) return;
+    
+    console.log("Initializing YouTube player");
+    
+    // Create container for player
+    const playerId = 'youtube-player';
+    let playerContainer = document.getElementById(playerId);
+    
+    if (!playerContainer) {
+      playerContainer = document.createElement('div');
+      playerContainer.id = playerId;
+      containerRef.current.appendChild(playerContainer);
+    }
+    
+    // Create player
+    playerRef.current = new window.YT.Player(playerId, {
+      height: '100%',
+      width: '100%',
+      playerVars: {
+        autoplay: 1,
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+        showinfo: 0,
+        iv_load_policy: 3,
+        enablejsapi: 1,
+        origin: window.location.origin
+      },
+      events: {
+        onReady: handlePlayerReady,
+        onStateChange: handlePlayerStateChange,
+        onError: handlePlayerError
+      }
+    });
+  };
+
+  // Handle player ready event
+  const handlePlayerReady = (event: any) => {
+    console.log("YouTube player is ready");
+    setPlayerReady(true);
+    setIsLoading(false);
+    
+    // Load current song if available
+    if (currentSong?.youtube_id) {
+      loadVideo(currentSong.youtube_id, playbackState.playback_position || 0);
     }
   };
-  
-  // Play next song
-  const handlePlayNext = async () => {
-    if (songs.length === 0) return;
+
+  // Handle player state changes
+  const handlePlayerStateChange = (event: any) => {
+    const states = {
+      '-1': 'UNSTARTED',
+      '0': 'ENDED',
+      '1': 'PLAYING',
+      '2': 'PAUSED',
+      '3': 'BUFFERING',
+      '5': 'CUED'
+    };
+    
+    const stateName = states[event.data.toString()] || event.data;
+    console.log(`Player state changed: ${stateName}`);
+    
+    // Handle video ended
+    if (event.data === window.YT.PlayerState.ENDED && !videoEndedRef.current) {
+      videoEndedRef.current = true;
+      console.log("Video ended, calling onVideoEnded");
+      
+      // Set autoplay flag to true to ensure next video plays automatically
+      autoplayNextRef.current = true;
+      
+      // Call the onVideoEnded callback which will trigger loading the next song
+      onVideoEnded();
+    }
+    
+    // Reset videoEnded flag when video starts playing
+    if (event.data === window.YT.PlayerState.PLAYING) {
+      videoEndedRef.current = false;
+    }
+  };
+
+  // Handle player errors
+  const handlePlayerError = (event: any) => {
+    const errorCodes = {
+      2: "Invalid video ID",
+      5: "HTML5 player error",
+      100: "Video not found or removed",
+      101: "Video owner doesn't allow embedding",
+      150: "Video owner doesn't allow embedding"
+    };
+    
+    const errorMessage = errorCodes[event.data as keyof typeof errorCodes] || `Error code ${event.data}`;
+    console.error(`YouTube player error: ${errorMessage}`);
+    
+    toast({
+      title: "Video Playback Error",
+      description: errorMessage,
+      variant: "destructive"
+    });
+  };
+
+  // Load video helper function
+  const loadVideo = (videoId: string, startSeconds: number = 0) => {
+    if (!playerRef.current || !playerReady) return;
+    
+    console.log(`Loading video: ${videoId} at ${startSeconds}s`);
+    setIsLoading(true);
     
     try {
-      // Mark current song as played
-      if (currentSong) {
-        await fetch("/api/songs/update", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            songId: currentSong.id,
-            isPlayed: true,
-          }),
-        });
-      }
-      
-      // Get next song (highest voted)
-      const nextSong = songs[0];
-      
-      if (nextSong) {
-        await fetch("/api/playback", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            roomId,
-            currentSongId: nextSong.id,
-            currentTime: 0,
-            isPlaying: true,
-          }),
+      // If playback is paused and autoplay is not set, cue the video instead of loading it
+      if (!playbackState.is_playing && !autoplayNextRef.current) {
+        console.log("Cueing video (no autoplay)");
+        playerRef.current.cueVideoById({
+          videoId: videoId,
+          startSeconds: startSeconds
         });
       } else {
-        // No more songs in queue
-        await fetch("/api/playback", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            roomId,
-            currentSongId: null,
-            currentTime: 0,
-            isPlaying: false,
-          }),
+        console.log("Loading video with autoplay");
+        playerRef.current.loadVideoById({
+          videoId: videoId,
+          startSeconds: startSeconds
         });
+        
+        // If we're supposed to be paused but autoplay was set, reset it after loading
+        if (!playbackState.is_playing) {
+          setTimeout(() => {
+            playerRef.current.pauseVideo();
+          }, 500);
+        }
       }
-    } catch (error) {
-      console.error("Error playing next song:", error);
+      
+      // Reset autoplay flag after use
+      autoplayNextRef.current = false;
+    } catch (e) {
+      console.error("Error loading video:", e);
       toast({
-        title: "Error",
-        description: "Failed to play next song",
-        variant: "destructive",
+        title: "Error Loading Video",
+        description: "Failed to load the video. Please try refreshing the page.",
+        variant: "destructive"
       });
+    } finally {
+      setTimeout(() => setIsLoading(false), 1000);
     }
   };
-  
-  // Build YouTube embed URL
-  const getYouTubeEmbedUrl = () => {
-    if (!currentSong) return "";
+
+  // Update player when current song changes
+  useEffect(() => {
+    if (!playerRef.current || !playerReady) return;
     
-    // Base YouTube embed URL with autoplay and controls
-    const baseUrl = `https://www.youtube.com/embed/${currentSong.youtube_id}?`;
+    if (currentSong?.youtube_id) {
+      videoEndedRef.current = false;
+      
+      // If this is a new song (different ID), ensure autoplay is enabled
+      // if playback state is playing (meaning playback has been manually started at least once)
+      if (playerRef.current.getVideoData && 
+          playerRef.current.getVideoData().video_id !== currentSong.youtube_id) {
+        console.log("New song detected, checking autoplay");
+        if (playbackState.is_playing) {
+          console.log("Playback is active, enabling autoplay for next song");
+          autoplayNextRef.current = true;
+        }
+      }
+      
+      loadVideo(currentSong.youtube_id, playbackState.playback_position || 0);
+    } else {
+      console.log("No song to play");
+      try {
+        playerRef.current.stopVideo();
+      } catch (e) {
+        console.error("Error stopping video:", e);
+      }
+    }
+  }, [currentSong?.id, playerReady, playbackState.is_playing]);
+
+  // Update playback state
+  useEffect(() => {
+    if (!playerRef.current || !playerReady) return;
     
-    // Parameters
-    const params = new URLSearchParams({
-      autoplay: isPlaying ? "1" : "0",
-      controls: "1",
-      enablejsapi: "1",
-      origin: typeof window !== 'undefined' ? window.location.origin : '',
-      start: Math.floor(playbackState.playback_position || 0).toString(),
-      rel: "0",
-      modestbranding: "1"
-    });
+    console.log("Playback state updated:", playbackState);
     
-    return baseUrl + params.toString();
+    try {
+      if (playbackState.is_playing || autoplayNextRef.current) {
+        playerRef.current.playVideo();
+      } else {
+        playerRef.current.pauseVideo();
+      }
+    } catch (e) {
+      console.error("Error updating playback state:", e);
+    }
+  }, [playbackState.is_playing, playerReady]);
+
+  // Manual play/pause toggle
+  const togglePlayback = () => {
+    if (!playerRef.current || !playerReady) return;
+    
+    try {
+      const state = playerRef.current.getPlayerState();
+      if (state === window.YT.PlayerState.PLAYING) {
+        playerRef.current.pauseVideo();
+      } else {
+        playerRef.current.playVideo();
+      }
+    } catch (e) {
+      console.error("Error toggling playback:", e);
+    }
   };
-  
+
+  // Add a safety timer to check for video end
+  useEffect(() => {
+    let endCheckTimer: NodeJS.Timeout | null = null;
+    
+    // If we have a player and a video is loaded, start the safety timer
+    if (playerRef.current && playerReady && currentSong?.youtube_id) {
+      console.log("Starting end check timer for video:", currentSong.youtube_id);
+      
+      endCheckTimer = setInterval(() => {
+        try {
+          // Check if player exists and is ready
+          if (!playerRef.current || typeof playerRef.current.getPlayerState !== 'function') return;
+          
+          const state = playerRef.current.getPlayerState();
+          
+          // Only check if the video is playing
+          if (state === window.YT.PlayerState.PLAYING) {
+            // Get current time and duration
+            const currentTime = playerRef.current.getCurrentTime() || 0;
+            const duration = playerRef.current.getDuration() || 0;
+            
+            // If we're near the end of the video and haven't processed the end yet
+            if (duration > 0 && currentTime > 0 && duration - currentTime <= 1.5 && !videoEndedRef.current) {
+              console.log(`Video near end (${currentTime.toFixed(1)}/${duration.toFixed(1)}), triggering end handler`);
+              videoEndedRef.current = true;
+              
+              // Set autoplay flag to true to ensure next video plays automatically
+              autoplayNextRef.current = true;
+              
+              onVideoEnded();
+            }
+          }
+        } catch (e) {
+          console.error("Error in end check timer:", e);
+        }
+      }, 1000);
+    }
+    
+    // Clean up timer on unmount or when video changes
+    return () => {
+      if (endCheckTimer) {
+        clearInterval(endCheckTimer);
+      }
+    };
+  }, [playerReady, currentSong?.youtube_id, onVideoEnded]);
+
   return (
-    <Card>
+    <Card className="overflow-hidden">
       <CardContent className="p-0">
-        <div className="aspect-video bg-black">
-          {currentSong ? (
-            <iframe
-              ref={iframeRef}
-              width="100%"
-              height="100%"
-              src={getYouTubeEmbedUrl()}
-              title="YouTube video player"
-              frameBorder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-            ></iframe>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-              No song selected
+        {/* Video Container */}
+        <div className="aspect-video bg-black relative">
+          <div ref={containerRef} className="w-full h-full absolute inset-0" />
+          
+          {/* Loading Overlay */}
+          {(isLoading || !playerReady || !currentSong) && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-70 text-white">
+              {isLoading ? (
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                  <p>Loading video...</p>
+                </div>
+              ) : !currentSong ? (
+                <p>No song selected</p>
+              ) : (
+                <Loader2 className="h-8 w-8 animate-spin" />
+              )}
             </div>
           )}
+          
+          {/* Debug info */}
+          <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 text-white text-xs p-2">
+            <div>
+              Song: {currentSong ? `${currentSong.title} (${currentSong.youtube_id})` : 'None'}
+            </div>
+            <div>
+              Player: {playerReady ? 'Ready' : 'Not ready'} | 
+              Playing: {playbackState.is_playing ? 'Yes' : 'No'} | 
+              Autoplay Next: {autoplayNextRef.current ? 'Yes' : 'No'}
+            </div>
+          </div>
         </div>
         
+        {/* Controls */}
         <div className="p-4 flex justify-between items-center">
           <div className="flex-1">
             <h3 className="font-medium truncate">
@@ -181,23 +382,50 @@ export function YouTubePlayer({
             <Button
               variant="outline"
               size="icon"
-              onClick={handlePlayPause}
-              disabled={!currentSong}
+              onClick={togglePlayback}
+              disabled={!currentSong || !playerReady}
             >
-              {isPlaying ? (
+              {playbackState.is_playing ? (
                 <Pause className="h-5 w-5" />
               ) : (
                 <Play className="h-5 w-5" />
               )}
             </Button>
             
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={handlePlayNext}
-              disabled={songs.length === 0}
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => {
+                if (currentSong) {
+                  videoEndedRef.current = true;
+                  autoplayNextRef.current = true;
+                  onVideoEnded();
+                }
+              }}
             >
-              <SkipForward className="h-5 w-5" />
+              Skip
+            </Button>
+
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => {
+                if (playerRef.current && playerReady && currentSong) {
+                  try {
+                    // Force reload the current video
+                    console.log("Force reloading video");
+                    autoplayNextRef.current = true;
+                    playerRef.current.loadVideoById({
+                      videoId: currentSong.youtube_id,
+                      startSeconds: 0
+                    });
+                  } catch (e) {
+                    console.error("Error reloading video:", e);
+                  }
+                }
+              }}
+            >
+              Reload
             </Button>
           </div>
         </div>

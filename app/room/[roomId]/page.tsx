@@ -1,7 +1,7 @@
-import { auth } from "@/app/api/auth/[...nextauth]/route";
-import { redirect, notFound } from "next/navigation";
-import { createSupabaseClient } from "@/lib/supabase/server";
-import { RoomClient } from "@/components/room/room-client";
+import { redirect } from 'next/navigation';
+import { auth } from '@/app/api/auth/[...nextauth]/route';
+import { createSupabaseClient } from '@/lib/supabase/server';
+import RoomClient from '@/components/room/room-client';
 import { Room } from "@/lib/types";
 
 interface RoomPageProps {
@@ -12,24 +12,26 @@ interface RoomPageProps {
 
 export default async function RoomPage({ params }: RoomPageProps) {
   const { roomId } = params;
+  
+  // Get the session
   const session = await auth();
   
   if (!session?.user) {
-    redirect("/login");
+    redirect('/login');
   }
-
+  
+  // Create Supabase client
   const supabase = createSupabaseClient();
   
-  // Check if room exists and is active
-  const { data: room, error: roomError } = await supabase
-    .from("rooms")
-    .select()
-    .eq("id", roomId)
-    .eq("is_active", true)
+  // Check if the room exists
+  const { data: room, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('id', roomId)
     .single();
   
-  if (roomError || !room) {
-    notFound();
+  if (error || !room) {
+    redirect('/dashboard');
   }
   
   // Check if user is a participant
@@ -64,15 +66,12 @@ export default async function RoomPage({ params }: RoomPageProps) {
     `)
     .eq("room_id", roomId);
   
-  // Determine if current user is the host
-  const isHost = room.host_id === session.user.id;
-  
   return (
     <RoomClient 
-      room={room as Room} 
-      currentUser={session.user}
+      roomId={roomId}
+      room={room as Room}
       participants={participants || []}
-      isHost={isHost}
+      session={session}
     />
   );
 } 
