@@ -190,22 +190,37 @@ export default function YoutubePlayer({
     setIsLoading(true);
     
     try {
-      playerRef.current.loadVideoById({
-        videoId: videoId,
-        startSeconds: startSeconds
-      });
-      
-      // If we're supposed to be paused
+      // If playback is paused and autoplay is not set, cue the video instead of loading it
       if (!playbackState.is_playing && !autoplayNextRef.current) {
-        setTimeout(() => {
-          playerRef.current.pauseVideo();
-        }, 500);
+        console.log("Cueing video (no autoplay)");
+        playerRef.current.cueVideoById({
+          videoId: videoId,
+          startSeconds: startSeconds
+        });
+      } else {
+        console.log("Loading video with autoplay");
+        playerRef.current.loadVideoById({
+          videoId: videoId,
+          startSeconds: startSeconds
+        });
+        
+        // If we're supposed to be paused but autoplay was set, reset it after loading
+        if (!playbackState.is_playing) {
+          setTimeout(() => {
+            playerRef.current.pauseVideo();
+          }, 500);
+        }
       }
       
       // Reset autoplay flag after use
       autoplayNextRef.current = false;
     } catch (e) {
       console.error("Error loading video:", e);
+      toast({
+        title: "Error Loading Video",
+        description: "Failed to load the video. Please try refreshing the page.",
+        variant: "destructive"
+      });
     } finally {
       setTimeout(() => setIsLoading(false), 1000);
     }
@@ -219,10 +234,14 @@ export default function YoutubePlayer({
       videoEndedRef.current = false;
       
       // If this is a new song (different ID), ensure autoplay is enabled
+      // if playback state is playing (meaning playback has been manually started at least once)
       if (playerRef.current.getVideoData && 
           playerRef.current.getVideoData().video_id !== currentSong.youtube_id) {
-        console.log("New song detected, ensuring autoplay");
-        autoplayNextRef.current = true;
+        console.log("New song detected, checking autoplay");
+        if (playbackState.is_playing) {
+          console.log("Playback is active, enabling autoplay for next song");
+          autoplayNextRef.current = true;
+        }
       }
       
       loadVideo(currentSong.youtube_id, playbackState.playback_position || 0);
@@ -234,7 +253,7 @@ export default function YoutubePlayer({
         console.error("Error stopping video:", e);
       }
     }
-  }, [currentSong?.id, playerReady]);
+  }, [currentSong?.id, playerReady, playbackState.is_playing]);
 
   // Update playback state
   useEffect(() => {

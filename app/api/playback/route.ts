@@ -61,10 +61,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Only the host can control playback' }, { status: 403 });
     }
     
-    // Update the room's playback state
-    const updateData: any = {
-      updated_at: new Date().toISOString(),
-    };
+    // Check if playback state exists for this room
+    const { data: existingPlaybackState, error: checkError } = await supabase
+      .from('playback_state')
+      .select('*')
+      .eq('room_id', roomId)
+      .single();
+    
+    const updateData: any = {};
     
     if (typeof is_playing === 'boolean') {
       updateData.is_playing = is_playing;
@@ -74,11 +78,39 @@ export async function POST(req: NextRequest) {
       updateData.playback_position = playback_position;
     }
     
-    const { data, error: updateError } = await supabase
+    let data;
+    let updateError = null;
+    
+    if (checkError && checkError.code === 'PGRST116') {
+      // Playback state doesn't exist, create it
+      const { data: insertData, error: insertError } = await supabase
+        .from('playback_state')
+        .insert({
+          room_id: roomId,
+          is_playing: updateData.is_playing !== undefined ? updateData.is_playing : false,
+          playback_position: updateData.playback_position !== undefined ? updateData.playback_position : 0
+        })
+        .select();
+      
+      data = insertData;
+      updateError = insertError;
+    } else {
+      // Update existing playback state
+      const { data: updateData, error: updatePlaybackError } = await supabase
+        .from('playback_state')
+        .update(updateData)
+        .eq('room_id', roomId)
+        .select();
+      
+      data = updateData;
+      updateError = updatePlaybackError;
+    }
+    
+    // Update the room's updated_at timestamp
+    await supabase
       .from('rooms')
-      .update(updateData)
-      .eq('id', roomId)
-      .select();
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', roomId);
     
     if (updateError) {
       return NextResponse.json({ error: 'Failed to update playback state' }, { status: 500 });
@@ -102,9 +134,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       playback_state: {
-        is_playing: updateData.is_playing !== undefined ? updateData.is_playing : data[0].is_playing,
-        playback_position: updateData.playback_position !== undefined ? updateData.playback_position : data[0].playback_position,
-        updated_at: data[0].updated_at,
+        is_playing: updateData.is_playing !== undefined ? updateData.is_playing : (data && data[0]?.is_playing) || false,
+        playback_position: updateData.playback_position !== undefined ? updateData.playback_position : (data && data[0]?.playback_position) || 0,
+        updated_at: new Date().toISOString(),
         timestamp: Date.now(),
       },
       current_song: currentSong,
@@ -151,16 +183,27 @@ export async function GET(req: NextRequest) {
     
     // Get the room's playback state
     const { data: playbackState, error: playbackError } = await supabase
-      .from('rooms')
-      .select('is_playing, playback_position, updated_at')
-      .eq('id', roomId)
+      .from('playback_state')
+      .select('is_playing, playback_position, current_song_id')
+      .eq('room_id', roomId)
       .single();
     
-    if (playbackError) {
+    if (playbackError && playbackError.code !== 'PGRST116') {
       return NextResponse.json(
         { error: 'Failed to get playback state' },
         { status: 500 }
       );
+    }
+    
+    // Get the room's updated_at timestamp
+    const { data: roomData, error: roomError } = await supabase
+      .from('rooms')
+      .select('updated_at')
+      .eq('id', roomId)
+      .single();
+      
+    if (roomError) {
+      console.error('Error getting room data:', roomError);
     }
     
     // Get the current song (first unplayed song)
@@ -180,9 +223,9 @@ export async function GET(req: NextRequest) {
     
     return NextResponse.json({
       playback_state: {
-        is_playing: playbackState.is_playing || false,
-        playback_position: playbackState.playback_position || 0,
-        updated_at: playbackState.updated_at,
+        is_playing: playbackState?.is_playing || false,
+        playback_position: playbackState?.playback_position || 0,
+        updated_at: roomData?.updated_at || new Date().toISOString(),
         timestamp: Date.now(),
       },
       current_song: currentSong,

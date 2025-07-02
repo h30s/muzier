@@ -33,24 +33,50 @@ export default function RoomClient({
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [currentParticipants, setCurrentParticipants] = useState(participants);
   const [isPlaybackInitialized, setIsPlaybackInitialized] = useState(false);
+  const [hasPlaybackStarted, setHasPlaybackStarted] = useState(false);
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
     is_playing: false,
     playback_position: 0,
-    timestamp: Date.now(),
-    updated_at: Date.now(),
+    timestamp: 0,
+    updated_at: 0,
   });
+  
+  // Update timestamps on client-side only
+  useEffect(() => {
+    setPlaybackState(prev => ({
+      ...prev,
+      timestamp: Date.now(),
+      updated_at: Date.now()
+    }));
+    
+    // Auto-start playback if there are songs in the queue when component mounts
+    if (currentSong && !hasPlaybackStarted) {
+      console.log("Auto-starting playback for initial song");
+      // We use a small timeout to ensure the component is fully mounted
+      const timer = setTimeout(() => {
+        startPlayback();
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [currentSong, hasPlaybackStarted]);
   const ws = useRef<WebSocket | null>(null);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
   const [webSocketActive, setWebSocketActive] = useState(false);
   const [webSocketError, setWebSocketError] = useState<string | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
-  const [isDebugMode, setIsDebugMode] = useState(true);
+  const [isDebugMode, setIsDebugMode] = useState(false);
+  
+  // Enable debug mode on client-side only
+  useEffect(() => {
+    setIsDebugMode(true);
+  }, []);
 
   // Memoize the refreshQueue function to avoid unnecessary re-renders
   const refreshQueue = useCallback(async () => {
     console.log("Refreshing song queue for room:", roomId);
     try {
-      const res = await fetch(`/api/songs?roomId=${roomId}`);
+      const res = await fetch(`/api/songs?roomId=${roomId}&includeVotes=true`);
       if (!res.ok) {
         throw new Error(`Failed to fetch songs: ${res.status} ${res.statusText}`);
       }
@@ -67,18 +93,41 @@ export default function RoomClient({
             id: song.id,
             title: song.title,
             youtube_id: song.youtube_id,
-            is_played: song.is_played
+            is_played: song.is_played,
+            upvotes: song.upvotes || 0,
+            downvotes: song.downvotes || 0
           });
         });
         
         setSongs(data.songs);
         
+        // Sort unplayed songs by vote score
+        const unplayedSongs = data.songs
+          .filter((song: Song) => !song.is_played)
+          .sort((a: any, b: any) => {
+            const aScore = (a.upvotes || 0) - (a.downvotes || 0);
+            const bScore = (b.upvotes || 0) - (b.downvotes || 0);
+            return bScore - aScore; // Higher score first
+          });
+        
         // Get the first unplayed song as the current song
-        const nextSong = data.songs.find((song: Song) => !song.is_played);
+        const nextSong = unplayedSongs[0];
         
         if (nextSong) {
-          console.log("Found next song:", nextSong.title);
-          setCurrentSong(nextSong);
+          console.log("Found next song:", nextSong.title, "with vote score:", (nextSong.upvotes || 0) - (nextSong.downvotes || 0));
+          
+          // Check if we need to update the current song
+          const shouldUpdateCurrentSong = !currentSong || currentSong.id !== nextSong.id;
+          
+          if (shouldUpdateCurrentSong) {
+            setCurrentSong(nextSong);
+            
+            // Auto-start playback if we already have songs playing
+            if (hasPlaybackStarted) {
+              console.log("Auto-starting playback for next song since playback was already started");
+              // We'll let the effect hook handle starting playback when currentSong changes
+            }
+          }
         } else {
           console.log("No unplayed songs in queue");
           setCurrentSong(null);
@@ -97,7 +146,7 @@ export default function RoomClient({
       });
       return null;
     }
-  }, [roomId, toast]);
+  }, [roomId, toast, currentSong, hasPlaybackStarted]);
 
   // Handle when the current video ends
   const handleVideoEnded = useCallback(async () => {
@@ -129,44 +178,64 @@ export default function RoomClient({
       }
       
       // 2. Directly query for the next song to avoid refresh delays
-      const nextSongsResponse = await fetch(`/api/songs?roomId=${roomId}&unplayedOnly=true`);
+      // Get all unplayed songs and sort them by votes
+      const nextSongsResponse = await fetch(`/api/songs?roomId=${roomId}&unplayedOnly=true&includeVotes=true`);
       
       if (nextSongsResponse.ok) {
         const nextSongsData = await nextSongsResponse.json();
         console.log("Next songs data:", nextSongsData);
         
         if (nextSongsData.songs && nextSongsData.songs.length > 0) {
-          // We have a next song, set it as current
-          const nextSong = nextSongsData.songs[0];
-          console.log("Setting next song:", nextSong.title);
+          // Sort songs by vote score (upvotes - downvotes)
+          const sortedSongs = [...nextSongsData.songs].sort((a, b) => {
+            const aScore = (a.upvotes || 0) - (a.downvotes || 0);
+            const bScore = (b.upvotes || 0) - (b.downvotes || 0);
+            return bScore - aScore; // Higher score first
+          });
+          
+          // Get the highest voted song
+          const nextSong = sortedSongs[0];
+          console.log("Setting next song:", nextSong.title, "with vote score:", (nextSong.upvotes || 0) - (nextSong.downvotes || 0));
           
           // Update current song state
           setCurrentSong(nextSong);
           
-          // Set playback state to playing and position to 0
-          const playbackResponse = await fetch(`/api/playback?roomId=${roomId}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              is_playing: true,
-              playback_position: 0,
-              timestamp: Date.now()
-            })
-          });
-          
-          if (!playbackResponse.ok) {
-            console.warn("Failed to update playback state:", await playbackResponse.text());
-          } else {
-            console.log("Updated playback state for new song");
+          // If playback has been manually started at least once, automatically play the next song
+          if (hasPlaybackStarted) {
+            // Set playback state to playing and position to 0
+            const playbackResponse = await fetch(`/api/playback?roomId=${roomId}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                is_playing: true,
+                playback_position: 0,
+                timestamp: Date.now()
+              })
+            });
             
-            // Update playback state locally
+            if (!playbackResponse.ok) {
+              console.warn("Failed to update playback state:", await playbackResponse.text());
+            } else {
+              console.log("Updated playback state for new song");
+              
+              // Update playback state locally
+              const now = Date.now();
+              setPlaybackState({
+                is_playing: true,
+                playback_position: 0,
+                timestamp: now,
+                updated_at: now
+              });
+            }
+          } else {
+            // If playback hasn't been started manually yet, keep it paused
+            console.log("Playback hasn't been manually started yet, keeping next song paused");
             setPlaybackState({
-              is_playing: true,
-              playback_position: 0,
-              timestamp: Date.now(),
-              updated_at: Date.now()
+              ...playbackState,
+              is_playing: false,
+              playback_position: 0
             });
           }
           
@@ -199,7 +268,7 @@ export default function RoomClient({
       // Try to refresh the queue anyway
       refreshQueue();
     }
-  }, [currentSong, roomId, refreshQueue, toast, playbackState]);
+  }, [currentSong, roomId, refreshQueue, toast, playbackState, hasPlaybackStarted]);
 
   // Handle playback toggling
   const togglePlayback = async () => {
@@ -338,9 +407,28 @@ export default function RoomClient({
       if (isPlaybackInitialized) return;
       
       try {
+        // Get current playback state from the server
         const res = await fetch(`/api/playback/initialize?roomId=${roomId}`);
         
         if (res.ok) {
+          const data = await res.json();
+          
+          // Update local state with server state, but don't auto-start playback for new users
+          if (data.playback_state) {
+            // If this is a new user joining, don't auto-play
+            const shouldAutoPlay = data.playback_state.is_playing;
+            
+            setPlaybackState({
+              ...data.playback_state,
+              is_playing: shouldAutoPlay
+            });
+            
+            console.log("Initialized playback state:", {
+              ...data.playback_state,
+              is_playing: shouldAutoPlay
+            });
+          }
+          
           setIsPlaybackInitialized(true);
         }
       } catch (error) {
@@ -466,6 +554,63 @@ export default function RoomClient({
     }
   };
 
+  // Start playback of the first song
+  const startPlayback = async () => {
+    if (!currentSong) {
+      toast({
+        title: "No songs in queue",
+        description: "Add songs to the queue first",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      // Set playback state to playing and position to 0
+      const playbackResponse = await fetch(`/api/playback/initialize?roomId=${roomId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          is_playing: true,
+          playback_position: 0
+        })
+      });
+      
+      if (!playbackResponse.ok) {
+        console.warn("Failed to update playback state:", await playbackResponse.text());
+        throw new Error("Failed to start playback");
+      }
+      
+      console.log("Started playback for song:", currentSong.title);
+      
+      // Update playback state locally
+      const now = Date.now();
+      setPlaybackState({
+        is_playing: true,
+        playback_position: 0,
+        timestamp: now,
+        updated_at: now
+      });
+      
+      // Mark that playback has been manually started at least once
+      setHasPlaybackStarted(true);
+      
+      toast({
+        title: "Playback Started",
+        description: `Now playing: ${currentSong.title}`
+      });
+    } catch (error) {
+      console.error("Error starting playback:", error);
+      toast({
+        title: "Error",
+        description: "Failed to start playback",
+        variant: "destructive"
+      });
+    }
+  };
+
   return (
     <div className="container mx-auto p-4 space-y-6">
       <RoomHeader
@@ -497,8 +642,11 @@ export default function RoomClient({
             </div>
             <div>
               <h4 className="text-sm font-medium mb-1">Playback State:</h4>
-              <pre className="text-xs bg-slate-200 p-2 rounded overflow-auto max-h-20">
-                {JSON.stringify(playbackState, null, 2)}
+              <pre className="text-xs bg-slate-200 p-2 rounded overflow-auto max-h-20" suppressHydrationWarning>
+                {typeof window !== 'undefined' ? JSON.stringify({
+                  ...playbackState,
+                  hasPlaybackStarted
+                }, null, 2) : ''}
               </pre>
             </div>
           </div>
@@ -536,9 +684,17 @@ export default function RoomClient({
             onVideoEnded={handleVideoEnded}
           />
           
+          {/* Start playback button removed for better UX - playback now starts automatically */}
+          
           <AddSongForm 
             roomId={roomId} 
-            onSongAdded={refreshQueue} 
+            onSongAdded={async () => {
+              await refreshQueue();
+              // Auto-start playback if this is the first song and playback hasn't started yet
+              if (!hasPlaybackStarted && currentSong) {
+                startPlayback();
+              }
+            }} 
           />
           
           <SongQueue
@@ -548,6 +704,7 @@ export default function RoomClient({
             onSongUpdated={refreshQueue}
             onSongRemoved={refreshQueue}
             refreshCounter={refreshCounter}
+            session={session}
           />
         </div>
         

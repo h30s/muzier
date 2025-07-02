@@ -39,6 +39,9 @@ export interface Song {
   is_played: boolean;
   created_at: string;
   added_by_name?: string;
+  upvotes?: number;
+  downvotes?: number;
+  userVote?: 'up' | 'down' | null;
 }
 
 export interface Vote {

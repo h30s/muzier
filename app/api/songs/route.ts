@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
     const searchParams = req.nextUrl.searchParams;
     const roomId = searchParams.get('roomId');
     const unplayedOnly = searchParams.get('unplayedOnly') === 'true';
+    const includeVotes = searchParams.get('includeVotes') === 'true';
 
     if (!roomId) {
       return NextResponse.json({ error: 'Room ID is required' }, { status: 400 });
@@ -83,16 +84,59 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Add user info to songs
-    const songsWithUserInfo = songs.map(song => ({
-      ...song,
-      added_by_name: song.added_by && userMap[song.added_by] 
-        ? userMap[song.added_by].name 
-        : 'Unknown user'
-    }));
+    // Get votes if requested
+    let votesMap: Record<number, { up: number; down: number; userVote?: 'up' | 'down' | null }> = {};
+    
+    if (includeVotes && songs.length > 0) {
+      const songIds = songs.map(song => song.id);
+      
+      // Get all votes for these songs
+      const { data: votes, error: votesError } = await supabase
+        .from('votes')
+        .select('*')
+        .in('song_id', songIds);
+      
+      if (!votesError && votes) {
+        // Initialize vote counts for each song
+        songIds.forEach(songId => {
+          votesMap[songId] = { up: 0, down: 0, userVote: null };
+        });
+        
+        // Count votes by type
+        votes.forEach((vote: any) => {
+          if (votesMap[vote.song_id]) {
+            votesMap[vote.song_id][vote.vote_type]++;
+            
+            // Track the user's own vote
+            if (vote.user_id === session.user.id) {
+              votesMap[vote.song_id].userVote = vote.vote_type;
+            }
+          }
+        });
+      }
+    }
+
+    // Add user info and votes to songs
+    const songsWithInfo = songs.map(song => {
+      const songWithInfo: any = {
+        ...song,
+        added_by_name: song.added_by && userMap[song.added_by] 
+          ? userMap[song.added_by].name 
+          : 'Unknown user'
+      };
+      
+      // Add vote information if requested
+      if (includeVotes && votesMap[song.id]) {
+        songWithInfo.upvotes = votesMap[song.id].up;
+        songWithInfo.downvotes = votesMap[song.id].down;
+        songWithInfo.userVote = votesMap[song.id].userVote;
+      }
+      
+      return songWithInfo;
+    });
 
     return NextResponse.json({
-      songs: songsWithUserInfo
+      songs: songsWithInfo
     });
   } catch (error) {
     console.error('Error fetching songs:', error);
