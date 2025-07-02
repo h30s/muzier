@@ -8,7 +8,7 @@ interface ParticipantListProps {
   hostId: string;
 }
 
-export function ParticipantList({ participants, hostId }: ParticipantListProps) {
+export default function ParticipantList({ participants, hostId }: ParticipantListProps) {
   // Get initials from name
   const getInitials = (name: string | null | undefined) => {
     if (!name) return "?";

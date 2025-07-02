@@ -1,155 +1,286 @@
 "use client";
 
-import { useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { Song } from "@/lib/types";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { User, Song } from "@/lib/types";
-import { ChevronUp, ChevronDown, Clock } from "lucide-react";
+import { Trash2, Play, RefreshCw } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 interface SongQueueProps {
   songs: Song[];
-  currentUser: User;
+  isHost: boolean;
   roomId: string;
+  onSongUpdated?: () => void;
+  onSongRemoved?: () => void;
+  refreshCounter?: number;
 }
 
-export function SongQueue({ songs, currentUser, roomId }: SongQueueProps) {
-  const [votingInProgress, setVotingInProgress] = useState<Record<number, boolean>>({});
-  
-  const formatDuration = (seconds: number): string => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
-  };
-  
-  const handleVote = async (songId: number, voteType: 'up' | 'down') => {
+export default function SongQueue({
+  songs,
+  isHost,
+  roomId,
+  onSongUpdated,
+  onSongRemoved,
+  refreshCounter = 0
+}: SongQueueProps) {
+  const [localSongs, setLocalSongs] = useState<Song[]>(songs);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { toast } = useToast();
+
+  // Update local songs when songs prop changes
+  useEffect(() => {
+    setLocalSongs(songs);
+  }, [songs, refreshCounter]);
+
+  // Function to refresh songs directly
+  const refreshSongs = async () => {
+    setIsRefreshing(true);
     try {
-      setVotingInProgress((prev) => ({ ...prev, [songId]: true }));
+      const response = await fetch(`/api/songs?roomId=${roomId}`);
+      if (!response.ok) throw new Error("Failed to refresh songs");
       
-      const song = songs.find((s) => s.id === songId);
+      const data = await response.json();
       
-      if (!song) return;
-      
-      // If user already voted this way, remove their vote
-      if (song.user_vote === voteType) {
-        await fetch(`/api/songs/vote`, {
-          method: "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            songId,
-            userId: currentUser.id,
-          }),
-        });
-        return;
+      if (data.songs && Array.isArray(data.songs)) {
+        setLocalSongs(data.songs);
+        console.log(`Refreshed song queue. Found ${data.songs.length} songs.`);
+        
+        // Call the parent's callback if provided
+        if (onSongUpdated) onSongUpdated();
       }
-      
-      // If user voted the opposite way, update their vote
-      if (song.user_vote) {
-        await fetch(`/api/songs/vote`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            songId,
-            userId: currentUser.id,
-            voteType,
-          }),
-        });
-        return;
-      }
-      
-      // If user hasn't voted yet, insert a new vote
-      await fetch(`/api/songs/vote`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          songId,
-          userId: currentUser.id,
-          voteType,
-        }),
-      });
     } catch (error) {
-      console.error("Error voting:", error);
+      console.error("Error refreshing songs:", error);
+      toast({
+        title: "Error",
+        description: "Failed to refresh song queue",
+        variant: "destructive"
+      });
     } finally {
-      setVotingInProgress((prev) => ({ ...prev, [songId]: false }));
+      setIsRefreshing(false);
     }
   };
-  
+
+  // Function to remove a song
+  const removeSong = async (songId: number) => {
+    try {
+      const response = await fetch(`/api/songs?roomId=${roomId}&songId=${songId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error("Failed to remove song");
+      
+      // Update local state first for immediate feedback
+      setLocalSongs(prev => prev.filter(song => song.id !== songId));
+      
+      // Notify parent
+      if (onSongRemoved) onSongRemoved();
+      
+      toast({
+        title: "Song Removed",
+        description: "The song has been removed from the queue"
+      });
+    } catch (error) {
+      console.error("Error removing song:", error);
+      toast({
+        title: "Error",
+        description: "Failed to remove song",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // Function to play a specific song (mark all previous as played)
+  const playSong = async (songId: number) => {
+    try {
+      // Update the local state first
+      setLocalSongs(prev => 
+        prev.map(song => ({
+          ...song,
+          is_played: song.id === songId ? false : (song.id < songId)
+        }))
+      );
+      
+      // Call the API to update all songs
+      const response = await fetch(`/api/songs/update?roomId=${roomId}&songId=${songId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          playNow: true
+        })
+      });
+      
+      if (!response.ok) throw new Error("Failed to update song playback");
+      
+      // Notify parent
+      if (onSongUpdated) onSongUpdated();
+      
+      toast({
+        title: "Song Updated",
+        description: "The song will play next"
+      });
+    } catch (error) {
+      console.error("Error playing song:", error);
+      toast({
+        title: "Error",
+        description: "Failed to update song playback",
+        variant: "destructive"
+      });
+      // Refresh to get the correct state
+      refreshSongs();
+    }
+  };
+
+  // Group songs by played status
+  const unplayedSongs = localSongs.filter(song => !song.is_played);
+  const playedSongs = localSongs.filter(song => song.is_played);
+
   return (
-    <div className="space-y-4">
-      {songs.length === 0 ? (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <p className="text-muted-foreground">
-              No songs in the queue. Add a song to get started!
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        songs.map((song) => (
-          <Card key={song.id} className="overflow-hidden">
-            <div className="flex">
-              {/* Voting controls */}
-              <div className="flex flex-col items-center justify-center bg-muted p-4 w-16">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={`h-8 w-8 rounded-full ${
-                    song.user_vote === 'up' ? 'text-primary bg-primary/10' : ''
-                  }`}
-                  disabled={votingInProgress[song.id]}
-                  onClick={() => handleVote(song.id, 'up')}
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex justify-between items-center">
+          <CardTitle>Song Queue</CardTitle>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={refreshSongs}
+            disabled={isRefreshing}
+          >
+            <RefreshCw 
+              className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} 
+            />
+            Refresh
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {/* Debug info */}
+        <div className="mb-4 text-xs text-gray-500">
+          Total songs: {localSongs.length} | 
+          Unplayed: {unplayedSongs.length} | 
+          Played: {playedSongs.length}
+        </div>
+        
+        {/* Queue is empty */}
+        {localSongs.length === 0 && (
+          <div className="text-center py-8 text-gray-500">
+            <p>No songs in queue</p>
+            <p className="text-sm mt-2">Add a song to get started</p>
+          </div>
+        )}
+        
+        {/* Up Next */}
+        {unplayedSongs.length > 0 && (
+          <div className="mb-6">
+            <h3 className="font-medium mb-2">Up Next</h3>
+            <div className="space-y-2">
+              {unplayedSongs.map((song) => (
+                <div 
+                  key={song.id} 
+                  className="flex items-center justify-between p-3 bg-gray-50 rounded-md"
                 >
-                  <ChevronUp className="h-5 w-5" />
-                </Button>
-                <span className="font-bold my-1">{song.votes_count || 0}</span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={`h-8 w-8 rounded-full ${
-                    song.user_vote === 'down' ? 'text-destructive bg-destructive/10' : ''
-                  }`}
-                  disabled={votingInProgress[song.id]}
-                  onClick={() => handleVote(song.id, 'down')}
-                >
-                  <ChevronDown className="h-5 w-5" />
-                </Button>
-              </div>
-              
-              {/* Song details */}
-              <CardContent className="flex-1 p-4">
-                <div className="flex gap-4">
-                  {/* Thumbnail */}
-                  <div className="flex-shrink-0">
-                    <img
-                      src={song.thumbnail || `https://i.ytimg.com/vi/${song.youtube_id}/hqdefault.jpg`}
-                      alt={song.title || 'Song thumbnail'}
-                      className="w-24 h-16 object-cover rounded-md"
-                    />
-                  </div>
-                  
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-sm sm:text-base truncate">
-                      {song.title || 'Unknown Title'}
-                    </h3>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                      <div className="flex items-center">
-                        <Clock className="h-3 w-3 mr-1" />
-                        <span>{song.duration ? formatDuration(song.duration) : '--:--'}</span>
-                      </div>
+                  <div className="flex items-center space-x-3">
+                    {song.thumbnail && (
+                      <img 
+                        src={song.thumbnail} 
+                        alt={song.title} 
+                        className="w-12 h-8 object-cover rounded"
+                      />
+                    )}
+                    <div className="overflow-hidden">
+                      <p className="font-medium truncate" title={song.title}>
+                        {song.title}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">
+                        Added by: {song.added_by || 'Unknown'}
+                      </p>
                     </div>
                   </div>
+                  <div className="flex space-x-1">
+                    {isHost && (
+                      <>
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => playSong(song.id)}
+                          title="Play now"
+                        >
+                          <Play className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => removeSong(song.id)}
+                          title="Remove song"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </CardContent>
+              ))}
             </div>
-          </Card>
-        ))
-      )}
-    </div>
+          </div>
+        )}
+        
+        {/* Already Played */}
+        {playedSongs.length > 0 && (
+          <div>
+            <h3 className="font-medium mb-2 text-gray-500">Already Played</h3>
+            <div className="space-y-2">
+              {playedSongs.map((song) => (
+                <div 
+                  key={song.id} 
+                  className="flex items-center justify-between p-3 bg-gray-100 rounded-md opacity-60"
+                >
+                  <div className="flex items-center space-x-3">
+                    {song.thumbnail && (
+                      <img 
+                        src={song.thumbnail} 
+                        alt={song.title} 
+                        className="w-12 h-8 object-cover rounded grayscale"
+                      />
+                    )}
+                    <div className="overflow-hidden">
+                      <p className="font-medium truncate" title={song.title}>
+                        {song.title}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">
+                        Added by: {song.added_by || 'Unknown'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex space-x-1">
+                    {isHost && (
+                      <>
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => playSong(song.id)}
+                          title="Play again"
+                        >
+                          <Play className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="icon"
+                          onClick={() => removeSong(song.id)}
+                          title="Remove song"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 } 

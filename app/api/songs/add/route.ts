@@ -1,87 +1,113 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabase/server";
-import { extractYouTubeVideoId, fetchVideoDetails } from "@/lib/youtube/api";
+import { auth } from "../../auth/[...nextauth]/route";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const { url, roomId, userId } = await request.json();
-
-    if (!url || !roomId || !userId) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
+    console.log("Starting song add process");
+    
+    // Get session and verify user is authenticated
+    const session = await auth();
+    
+    if (!session?.user) {
+      console.log("User not authenticated");
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
-    // Extract video ID from URL
-    const videoId = extractYouTubeVideoId(url);
-
-    if (!videoId) {
-      return NextResponse.json(
-        { error: "Invalid YouTube URL" },
-        { status: 400 }
-      );
+    
+    console.log("User authenticated:", session.user.id);
+    
+    // Parse request body
+    const body = await request.json();
+    const { roomId, youtubeId, title, artist, duration, thumbnailUrl } = body;
+    
+    console.log("Received song data:", { roomId, youtubeId, title, duration, thumbnailUrl });
+    
+    // Validate required fields
+    if (!roomId || !youtubeId || !title) {
+      console.log("Missing required fields");
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
-
+    
+    // Create Supabase client
     const supabase = createSupabaseClient();
-
-    // Check if song already exists in the queue
-    const { data: existingSong } = await supabase
-      .from("songs")
-      .select()
-      .eq("youtube_id", videoId)
-      .eq("room_id", roomId)
-      .eq("is_played", false)
+    
+    // Check if the room exists
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('*')
+      .eq('id', roomId)
       .single();
-
-    if (existingSong) {
-      return NextResponse.json(
-        { error: "Song already in queue" },
-        { status: 400 }
-      );
+    
+    if (roomError || !room) {
+      console.log("Room not found:", roomError);
+      return NextResponse.json({ error: 'Room not found' }, { status: 404 });
     }
-
-    // Fetch video details from YouTube API
-    const videoDetails = await fetchVideoDetails(videoId);
-
-    // Add song to queue
-    const { data: song, error } = await supabase
-      .from("songs")
+    
+    console.log("Room found:", room.id);
+    
+    // Check if user is in the room
+    const { data: participant, error: participantError } = await supabase
+      .from('room_participants')
+      .select('*')
+      .eq('room_id', roomId)
+      .eq('user_id', session.user.id)
+      .single();
+    
+    if (participantError || !participant) {
+      console.log("User not in room:", participantError);
+      return NextResponse.json({ error: 'You are not in this room' }, { status: 403 });
+    }
+    
+    console.log("User is a participant in the room");
+    
+    // Check if the song already exists in the queue
+    const { data: existingSongs, error: songCheckError } = await supabase
+      .from('songs')
+      .select('*')
+      .eq('room_id', roomId)
+      .eq('youtube_id', youtubeId)
+      .eq('is_played', false);
+    
+    if (existingSongs && existingSongs.length > 0) {
+      console.log("Song already in queue");
+      return NextResponse.json({ error: 'Song is already in the queue' }, { status: 400 });
+    }
+    
+    console.log("Song not in queue, proceeding to add");
+    
+    // Add the song to the queue
+    const { data: newSong, error: insertError } = await supabase
+      .from('songs')
       .insert({
-        youtube_id: videoId,
         room_id: roomId,
-        is_played: false,
-        added_by: userId,
-        title: videoDetails.title,
-        thumbnail: videoDetails.thumbnail,
-        duration: videoDetails.duration,
+        youtube_id: youtubeId,
+        title,
+        thumbnail: thumbnailUrl || '',
+        duration: duration || 0,
+        added_by: session.user.id,
+        is_played: false
       })
       .select()
       .single();
-
-    if (error) {
-      console.error("Error adding song:", error);
-      return NextResponse.json(
-        { error: error.message },
-        { status: 500 }
-      );
+    
+    if (insertError) {
+      console.error('Error adding song:', insertError);
+      return NextResponse.json({ error: 'Failed to add song' }, { status: 500 });
     }
-
-    // Add initial upvote from the user who added the song
+    
+    console.log("Song added successfully:", newSong);
+    
+    // Update the room's updated_at timestamp to trigger WebSocket events
     await supabase
-      .from("votes")
-      .insert({
-        song_id: song.id,
-        user_id: userId,
-        vote_type: "up",
-      });
-
-    return NextResponse.json({ song });
-  } catch (error: any) {
-    console.error("Error adding song:", error);
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+      .from('rooms')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', roomId);
+    
+    console.log("Room updated_at timestamp updated");
+    
+    return NextResponse.json({ success: true, song: newSong });
+  } catch (error) {
+    console.error('Error adding song:', error);
+    return NextResponse.json({ error: 'An unexpected error occurred' }, { status: 500 });
   }
 } 

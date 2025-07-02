@@ -1,37 +1,44 @@
 import { User as NextAuthUser } from "next-auth";
 
 // Extend NextAuth User type
-export interface User extends NextAuthUser {
+export interface User {
   id: string;
+  name?: string;
+  email?: string;
+  image?: string;
 }
 
 // Room types
 export interface Room {
   id: string;
-  host_id: string;
-  is_active: boolean;
+  name: string;
   created_at: string;
+  created_by: string;
+  is_active: boolean;
+  updated_at: string;
 }
 
 export interface RoomParticipant {
+  id: string;
   room_id: string;
   user_id: string;
-  joined_at: string;
-  user?: User;
+  user_name: string;
+  is_admin: boolean;
+  created_at: string;
 }
 
 // Song types
 export interface Song {
   id: number;
-  youtube_id: string;
   room_id: string;
-  is_played: boolean;
+  youtube_id: string;
+  title: string;
+  thumbnail: string;
+  duration: number;
   added_by: string;
-  title?: string;
-  thumbnail?: string;
-  duration?: number;
-  votes_count?: number;
-  user_vote?: 'up' | 'down' | null;
+  is_played: boolean;
+  created_at: string;
+  added_by_name?: string;
 }
 
 export interface Vote {
@@ -42,8 +49,18 @@ export interface Vote {
 
 // Playback state
 export interface PlaybackState {
+  id?: string;
   room_id: string;
-  current_song_id: number | null;
-  playback_position: number;
+  current_song_id: string | null;
   is_playing: boolean;
+  playback_position: number;
+}
+
+export interface VideoDetails {
+  videoId: string;
+  title: string;
+  description: string;
+  channelTitle: string;
+  thumbnailUrl: string;
+  duration: number; // in seconds
 } 

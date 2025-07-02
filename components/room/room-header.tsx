@@ -6,20 +6,23 @@ import { Button } from "@/components/ui/button";
 import { createSupabaseClient } from "@/lib/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Room } from "@/lib/types";
 
 interface RoomHeaderProps {
-  roomId: string;
+  room: Room;
   isHost: boolean;
+  isPlaying?: boolean;
+  onPlayPause?: () => void;
 }
 
-export function RoomHeader({ roomId, isHost }: RoomHeaderProps) {
+export default function RoomHeader({ room, isHost, isPlaying, onPlayPause }: RoomHeaderProps) {
   const [isLeaving, setIsLeaving] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
   
   const handleCopyRoomCode = () => {
-    navigator.clipboard.writeText(roomId);
+    navigator.clipboard.writeText(room.id);
     toast({
       title: "Room code copied",
       description: "Share this code with friends to invite them",
@@ -31,12 +34,19 @@ export function RoomHeader({ roomId, isHost }: RoomHeaderProps) {
       setIsLeaving(true);
       const supabase = createSupabaseClient();
       
+      const { data: session } = await supabase.auth.getSession();
+      
+      if (!session?.session?.user?.id) {
+        throw new Error("User not authenticated");
+      }
+      
       // Remove user from participants
       await supabase
         .from("room_participants")
         .delete()
         .match({
-          room_id: roomId,
+          room_id: room.id,
+          user_id: session.session.user.id
         });
       
       router.push("/dashboard");
@@ -61,7 +71,7 @@ export function RoomHeader({ roomId, isHost }: RoomHeaderProps) {
       await supabase
         .from("rooms")
         .update({ is_active: false })
-        .eq("id", roomId);
+        .eq("id", room.id);
       
       router.push("/dashboard");
     } catch (error) {
@@ -77,10 +87,10 @@ export function RoomHeader({ roomId, isHost }: RoomHeaderProps) {
   };
   
   return (
-    <div className="bg-muted py-4 px-6 border-b">
-      <div className="container flex items-center justify-between">
+    <div className="bg-card rounded-lg p-4 shadow-sm mb-4">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Room: {roomId}</h1>
+          <h1 className="text-2xl font-bold">Room: {room.id}</h1>
           <div className="flex items-center gap-2 mt-1">
             <span className="text-sm text-muted-foreground">
               {isHost ? "You are the host" : "You are a participant"}
@@ -92,6 +102,15 @@ export function RoomHeader({ roomId, isHost }: RoomHeaderProps) {
         </div>
         
         <div className="flex items-center gap-2">
+          {onPlayPause && (
+            <Button 
+              variant="outline" 
+              onClick={onPlayPause}
+            >
+              {isPlaying ? "Pause" : "Play"}
+            </Button>
+          )}
+          
           {isHost ? (
             <Dialog>
               <DialogTrigger asChild>
