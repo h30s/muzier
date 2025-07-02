@@ -67,10 +67,10 @@ export default function RoomClient({
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [isDebugMode, setIsDebugMode] = useState(false);
   
-  // Enable debug mode on client-side only
+  // Enable debug mode only for room host
   useEffect(() => {
-    setIsDebugMode(true);
-  }, []);
+    setIsDebugMode(isHost);
+  }, [isHost]);
 
   // Memoize the refreshQueue function to avoid unnecessary re-renders
   const refreshQueue = useCallback(async () => {
@@ -275,7 +275,7 @@ export default function RoomClient({
     try {
       const newPlaybackState = { ...playbackState, is_playing: !playbackState.is_playing };
       setPlaybackState(newPlaybackState);
-      await fetch(`/api/playback/route?roomId=${roomId}`, {
+      await fetch(`/api/playback?roomId=${roomId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -666,7 +666,28 @@ export default function RoomClient({
                   ws.current.close();
                   setWebSocketActive(false);
                 } else {
-                  setupWebSocketConnection();
+                  // Reference the setupWebSocketConnection from the useEffect scope
+                  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                  const wsUrl = `${protocol}//${window.location.host}/api/ws?roomId=${roomId}`;
+                  
+                  // Close any existing connection
+                  if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
+                    ws.current.close();
+                  }
+                  
+                  try {
+                    ws.current = new WebSocket(wsUrl);
+                    ws.current.onopen = () => {
+                      console.log('WebSocket connection established');
+                      setWebSocketActive(true);
+                      setWebSocketError(null);
+                    };
+                    ws.current.onclose = () => setWebSocketActive(false);
+                    ws.current.onerror = () => setWebSocketActive(false);
+                  } catch (error) {
+                    console.error('Error setting up WebSocket:', error);
+                    setWebSocketActive(false);
+                  }
                 }
               }}
             >
