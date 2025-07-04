@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PlaybackState, Song } from "@/lib/types";
-import { Play, Pause, Loader2 } from "lucide-react";
+import { Play, Pause, Loader2, Volume2, VolumeX } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface YouTubePlayerProps {
@@ -38,12 +38,17 @@ export default function YoutubePlayer({
   // States
   const [playerReady, setPlayerReady] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(100);
+  const [isMuted, setIsMuted] = useState(false);
   
   // Refs
   const playerRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoEndedRef = useRef<boolean>(false);
   const autoplayNextRef = useRef<boolean>(true);
+  const progressTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   // Toast
   const { toast } = useToast();
@@ -123,6 +128,17 @@ export default function YoutubePlayer({
     console.log("YouTube player is ready");
     setPlayerReady(true);
     setIsLoading(false);
+    
+    // Set initial volume
+    try {
+      event.target.setVolume(volume);
+      
+      // Check if we should be muted (from browser's stored preferences)
+      const isMutedNow = event.target.isMuted();
+      setIsMuted(isMutedNow);
+    } catch (e) {
+      console.error("Error setting initial volume:", e);
+    }
     
     // Load current song if available
     if (currentSong?.youtube_id) {
@@ -334,6 +350,92 @@ export default function YoutubePlayer({
     };
   }, [playerReady, currentSong?.youtube_id, onVideoEnded]);
 
+  // Add a timer to update progress bar
+  useEffect(() => {
+    // Clear any existing timer
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    
+    // Only start the timer if player is ready and we have a current song
+    if (playerRef.current && playerReady && currentSong?.youtube_id) {
+      progressTimerRef.current = setInterval(() => {
+        try {
+          // Check if player exists and is ready
+          if (!playerRef.current || typeof playerRef.current.getCurrentTime !== 'function') return;
+          
+          // Get current time and duration
+          const time = playerRef.current.getCurrentTime() || 0;
+          const totalDuration = playerRef.current.getDuration() || 0;
+          
+          setCurrentTime(time);
+          setDuration(totalDuration);
+        } catch (e) {
+          console.error("Error updating progress:", e);
+        }
+      }, 1000);
+    }
+    
+    // Clean up timer on unmount or when video changes
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, [playerReady, currentSong?.youtube_id]);
+
+  // Format time as MM:SS
+  const formatTime = (seconds: number): string => {
+    if (isNaN(seconds)) return "0:00";
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Handle volume change
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseInt(e.target.value, 10);
+    setVolume(newVolume);
+    
+    if (playerRef.current && playerReady) {
+      try {
+        playerRef.current.setVolume(newVolume);
+        
+        // Update mute state
+        if (newVolume === 0) {
+          setIsMuted(true);
+        } else if (isMuted) {
+          setIsMuted(false);
+        }
+      } catch (e) {
+        console.error("Error setting volume:", e);
+      }
+    }
+  };
+  
+  // Handle mute toggle
+  const toggleMute = () => {
+    if (playerRef.current && playerReady) {
+      try {
+        if (isMuted) {
+          // Unmute
+          playerRef.current.unMute();
+          playerRef.current.setVolume(volume === 0 ? 50 : volume);
+          setVolume(volume === 0 ? 50 : volume);
+          setIsMuted(false);
+        } else {
+          // Mute
+          playerRef.current.mute();
+          setIsMuted(true);
+        }
+      } catch (e) {
+        console.error("Error toggling mute:", e);
+      }
+    }
+  };
+
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
@@ -370,63 +472,111 @@ export default function YoutubePlayer({
           </div>
         </div>
         
+        {/* Progress Bar */}
+        <div className="w-full bg-gray-200 h-1">
+          <div 
+            className="bg-primary h-1 transition-all duration-300 ease-in-out"
+            style={{ 
+              width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' 
+            }}
+          />
+        </div>
+        
         {/* Controls */}
-        <div className="p-4 flex justify-between items-center">
-          <div className="flex-1">
-            <h3 className="font-medium truncate">
-              {currentSong ? currentSong.title : "No song selected"}
-            </h3>
+        <div className="p-4 flex flex-col gap-2">
+          <div className="flex justify-between items-center">
+            <div className="flex-1">
+              <h3 className="font-medium truncate">
+                {currentSong ? currentSong.title : "No song selected"}
+              </h3>
+            </div>
+            
+            {/* Time Display */}
+            <div className="text-sm text-muted-foreground">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </div>
           </div>
           
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={togglePlayback}
-              disabled={!currentSong || !playerReady}
-            >
-              {playbackState.is_playing ? (
-                <Pause className="h-5 w-5" />
-              ) : (
-                <Play className="h-5 w-5" />
-              )}
-            </Button>
+          <div className="flex justify-between items-center">
+            <div className="flex gap-2 items-center">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={togglePlayback}
+                disabled={!currentSong || !playerReady}
+              >
+                {playbackState.is_playing ? (
+                  <Pause className="h-5 w-5" />
+                ) : (
+                  <Play className="h-5 w-5" />
+                )}
+              </Button>
+              
+              {/* Volume Control */}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={toggleMute}
+                  disabled={!currentSong || !playerReady}
+                >
+                  {isMuted ? (
+                    <VolumeX className="h-4 w-4" />
+                  ) : (
+                    <Volume2 className="h-4 w-4" />
+                  )}
+                </Button>
+                
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={volume}
+                  onChange={handleVolumeChange}
+                  className="w-20 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                  disabled={!currentSong || !playerReady}
+                />
+              </div>
+            </div>
             
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => {
-                if (currentSong) {
-                  videoEndedRef.current = true;
-                  autoplayNextRef.current = true;
-                  onVideoEnded();
-                }
-              }}
-            >
-              Skip
-            </Button>
-
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => {
-                if (playerRef.current && playerReady && currentSong) {
-                  try {
-                    // Force reload the current video
-                    console.log("Force reloading video");
+            <div className="flex gap-2">
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => {
+                  if (currentSong) {
+                    videoEndedRef.current = true;
                     autoplayNextRef.current = true;
-                    playerRef.current.loadVideoById({
-                      videoId: currentSong.youtube_id,
-                      startSeconds: 0
-                    });
-                  } catch (e) {
-                    console.error("Error reloading video:", e);
+                    onVideoEnded();
                   }
-                }
-              }}
-            >
-              Reload
-            </Button>
+                }}
+              >
+                Skip
+              </Button>
+
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => {
+                  if (playerRef.current && playerReady && currentSong) {
+                    try {
+                      // Force reload the current video
+                      console.log("Force reloading video");
+                      autoplayNextRef.current = true;
+                      playerRef.current.loadVideoById({
+                        videoId: currentSong.youtube_id,
+                        startSeconds: 0
+                      });
+                    } catch (e) {
+                      console.error("Error reloading video:", e);
+                    }
+                  }
+                }}
+              >
+                Reload
+              </Button>
+            </div>
           </div>
         </div>
       </CardContent>

@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Song, Vote } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Trash2, Play, RefreshCw, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Trash2, Play, RefreshCw, ThumbsUp, ThumbsDown, Loader2, Music } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Session } from "next-auth";
 
@@ -37,6 +37,7 @@ export default function SongQueue({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [votes, setVotes] = useState<Record<number, { up: number, down: number }>>({});
   const [userVotes, setUserVotes] = useState<Record<number, 'up' | 'down' | null>>({});
+  const [loadingVotes, setLoadingVotes] = useState<Record<number, boolean>>({});
   const { toast } = useToast();
 
   // Update local songs when songs prop changes
@@ -211,6 +212,9 @@ export default function SongQueue({
       return;
     }
     
+    // Set loading state for this song
+    setLoadingVotes(prev => ({ ...prev, [songId]: true }));
+    
     try {
       const currentVote = userVotes[songId];
       let method = 'POST';
@@ -249,30 +253,50 @@ export default function SongQueue({
       
       // Update vote counts
       setVotes(prev => {
-        const newVotes = { ...prev };
-        if (!newVotes[songId]) {
-          newVotes[songId] = { up: 0, down: 0 };
-        }
+        const oldVotes = prev[songId] || { up: 0, down: 0 };
+        const newVotes = { ...oldVotes };
         
         // Handle different actions
         if (action === 'add') {
-          newVotes[songId][voteType]++;
+          // Add new vote
+          newVotes[voteType]++;
         } else if (action === 'remove') {
-          newVotes[songId][voteType]--;
+          // Remove existing vote
+          newVotes[voteType]--;
         } else if (action === 'update') {
-          // Decrement the old vote type
-          newVotes[songId][currentVote]--;
-          // Increment the new vote type
-          newVotes[songId][voteType]++;
+          // Update vote (remove old, add new)
+          const oppositeType = voteType === 'up' ? 'down' : 'up';
+          newVotes[oppositeType]--;
+          newVotes[voteType]++;
         }
         
-        return newVotes;
+        return { ...prev, [songId]: newVotes };
       });
       
+      // Update local songs with new vote counts
+      setLocalSongs(prev => 
+        prev.map(song => 
+          song.id === songId 
+            ? { 
+                ...song, 
+                userVote: action === 'remove' ? null : voteType,
+                upvotes: votes[songId]?.up || 0,
+                downvotes: votes[songId]?.down || 0
+              }
+            : song
+        )
+      );
+      
+      // Show success toast
       toast({
         title: "Vote Recorded",
-        description: `Your ${voteType} vote has been recorded`
+        description: action === 'remove' 
+          ? "Your vote has been removed" 
+          : `You ${action === 'update' ? 'changed your vote' : 'voted'} ${voteType === 'up' ? 'up' : 'down'}`,
       });
+      
+      // Call parent callback if provided
+      if (onSongUpdated) onSongUpdated();
     } catch (error) {
       console.error("Error voting:", error);
       toast({
@@ -280,207 +304,169 @@ export default function SongQueue({
         description: "Failed to record your vote",
         variant: "destructive"
       });
-      // Refresh votes to get the correct state
-      fetchVotes();
+    } finally {
+      // Clear loading state
+      setLoadingVotes(prev => ({ ...prev, [songId]: false }));
     }
   };
 
   // Sort unplayed songs by votes (highest upvotes - downvotes first)
   const sortSongsByVotes = (songs: SongWithVotes[]) => {
     return [...songs].sort((a, b) => {
+      // First sort by played status
+      if (a.is_played !== b.is_played) {
+        return a.is_played ? 1 : -1; // Unplayed songs first
+      }
+      
+      // Then sort by vote score
       const aScore = (a.upvotes || 0) - (a.downvotes || 0);
       const bScore = (b.upvotes || 0) - (b.downvotes || 0);
-      return bScore - aScore;
+      
+      if (bScore !== aScore) {
+        return bScore - aScore; // Higher score first
+      }
+      
+      // If scores are equal, sort by creation time (newest first)
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
   };
 
-  // Group songs by played status
-  const unplayedSongs = sortSongsByVotes(localSongs.filter(song => !song.is_played));
-  const playedSongs = localSongs.filter(song => song.is_played);
+  // Memoize sorted songs to avoid recalculating on every render
+  const sortedSongs = useMemo(() => sortSongsByVotes(localSongs), [localSongs]);
+  
+  // Get the currently playing song (first unplayed song)
+  const currentlyPlayingSongId = useMemo(() => {
+    const firstUnplayed = sortedSongs.find(song => !song.is_played);
+    return firstUnplayed?.id;
+  }, [sortedSongs]);
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <div className="flex justify-between items-center">
-          <CardTitle>Song Queue</CardTitle>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={refreshSongs}
-            disabled={isRefreshing}
-          >
-            <RefreshCw 
-              className={`h-4 w-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} 
-            />
-            Refresh
-          </Button>
-        </div>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle>Song Queue</CardTitle>
+        <Button 
+          variant="ghost" 
+          size="sm" 
+          onClick={refreshSongs}
+          disabled={isRefreshing}
+        >
+          {isRefreshing ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Refreshing...
+            </>
+          ) : (
+            <>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </>
+          )}
+        </Button>
       </CardHeader>
       <CardContent>
-        {/* Debug info */}
-        <div className="mb-4 text-xs text-gray-500">
-          Total songs: {localSongs.length} | 
-          Unplayed: {unplayedSongs.length} | 
-          Played: {playedSongs.length}
-        </div>
-        
-        {/* Queue is empty */}
-        {localSongs.length === 0 && (
-          <div className="text-center py-8 text-gray-500">
-            <p>No songs in queue</p>
-            <p className="text-sm mt-2">Add a song to get started</p>
+        {localSongs.length === 0 ? (
+          <div className="text-center py-6 text-muted-foreground">
+            <p>No songs in queue. Add a song to get started!</p>
           </div>
-        )}
-        
-        {/* Up Next */}
-        {unplayedSongs.length > 0 && (
-          <div className="mb-6">
-            <h3 className="font-medium mb-2">Up Next</h3>
-            <div className="space-y-2">
-              {unplayedSongs.map((song) => (
-                <div 
-                  key={song.id} 
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-md"
-                >
-                  <div className="flex items-center space-x-3">
-                    {song.thumbnail && (
-                      <img 
-                        src={song.thumbnail} 
-                        alt={song.title} 
-                        className="w-12 h-8 object-cover rounded"
-                      />
-                    )}
-                    <div className="overflow-hidden">
-                      <p className="font-medium truncate" title={song.title}>
-                        {song.title}
-                      </p>
-                      <div className="flex items-center text-xs text-gray-500">
-                        <span className="truncate">Added by: {song.added_by_name || 'Unknown'}</span>
-                        <div className="ml-2 flex items-center space-x-1">
-                          <span className="flex items-center">
-                            <ThumbsUp className={`h-3 w-3 mr-1 ${song.userVote === 'up' ? 'text-green-500' : ''}`} />
-                            {song.upvotes || 0}
-                          </span>
-                          <span className="flex items-center">
-                            <ThumbsDown className={`h-3 w-3 mr-1 ${song.userVote === 'down' ? 'text-red-500' : ''}`} />
-                            {song.downvotes || 0}
-                          </span>
+        ) : (
+          <div className="space-y-2">
+            {sortedSongs.map((song) => (
+              <div 
+                key={song.id}
+                className={`flex items-center justify-between p-3 rounded-md ${
+                  song.is_played 
+                    ? 'bg-muted/50 text-muted-foreground' 
+                    : song.id === currentlyPlayingSongId
+                      ? 'bg-primary/10 border border-primary/30'
+                      : 'bg-card hover:bg-accent/10'
+                }`}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0 mr-3">
+                      {song.thumbnail ? (
+                        <img 
+                          src={song.thumbnail} 
+                          alt={song.title} 
+                          className="w-12 h-12 rounded object-cover"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 bg-muted rounded flex items-center justify-center">
+                          <Music className="h-6 w-6 text-muted-foreground" />
                         </div>
-                      </div>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{song.title}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Added by {song.added_by_name || 'Unknown'}
+                      </p>
                     </div>
                   </div>
-                  <div className="flex space-x-1">
-                    {session?.user && (
-                      <>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => handleVote(song.id, 'up')}
-                          title="Upvote"
-                          className={song.userVote === 'up' ? 'text-green-500' : ''}
-                        >
-                          <ThumbsUp className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => handleVote(song.id, 'down')}
-                          title="Downvote"
-                          className={song.userVote === 'down' ? 'text-red-500' : ''}
-                        >
-                          <ThumbsDown className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
-                    {isHost && (
-                      <>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => playSong(song.id)}
-                          title="Play now"
-                        >
-                          <Play className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => removeSong(song.id)}
-                          title="Remove song"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
-                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        {/* Already Played */}
-        {playedSongs.length > 0 && (
-          <div>
-            <h3 className="font-medium mb-2 text-gray-500">Already Played</h3>
-            <div className="space-y-2">
-              {playedSongs.map((song) => (
-                <div 
-                  key={song.id} 
-                  className="flex items-center justify-between p-3 bg-gray-100 rounded-md opacity-60"
-                >
-                  <div className="flex items-center space-x-3">
-                    {song.thumbnail && (
-                      <img 
-                        src={song.thumbnail} 
-                        alt={song.title} 
-                        className="w-12 h-8 object-cover rounded grayscale"
-                      />
-                    )}
-                    <div className="overflow-hidden">
-                      <p className="font-medium truncate" title={song.title}>
-                        {song.title}
-                      </p>
-                      <div className="flex items-center text-xs text-gray-500">
-                        <span className="truncate">Added by: {song.added_by_name || 'Unknown'}</span>
-                        <div className="ml-2 flex items-center space-x-1">
-                          <span className="flex items-center">
-                            <ThumbsUp className="h-3 w-3 mr-1" />
-                            {song.upvotes || 0}
-                          </span>
-                          <span className="flex items-center">
-                            <ThumbsDown className="h-3 w-3 mr-1" />
-                            {song.downvotes || 0}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
+                
+                <div className="flex items-center gap-2 ml-4">
+                  {/* Vote buttons */}
+                  <div className="flex items-center space-x-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={`h-8 w-8 ${song.userVote === 'up' ? 'bg-green-100 text-green-600' : ''}`}
+                      onClick={() => handleVote(song.id, 'up')}
+                      disabled={song.is_played || loadingVotes[song.id]}
+                    >
+                      {loadingVotes[song.id] ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ThumbsUp className={`h-4 w-4 ${song.userVote === 'up' ? 'fill-current' : ''}`} />
+                      )}
+                    </Button>
+                    <span className="text-sm min-w-[1.5rem] text-center">{song.upvotes || 0}</span>
                   </div>
-                  <div className="flex space-x-1">
-                    {isHost && (
-                      <>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => playSong(song.id)}
-                          title="Play again"
-                        >
-                          <Play className="h-4 w-4" />
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          onClick={() => removeSong(song.id)}
-                          title="Remove song"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
+                  
+                  <div className="flex items-center space-x-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={`h-8 w-8 ${song.userVote === 'down' ? 'bg-red-100 text-red-600' : ''}`}
+                      onClick={() => handleVote(song.id, 'down')}
+                      disabled={song.is_played || loadingVotes[song.id]}
+                    >
+                      {loadingVotes[song.id] ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ThumbsDown className={`h-4 w-4 ${song.userVote === 'down' ? 'fill-current' : ''}`} />
+                      )}
+                    </Button>
+                    <span className="text-sm min-w-[1.5rem] text-center">{song.downvotes || 0}</span>
                   </div>
+                  
+                  {/* Host controls */}
+                  {isHost && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      onClick={() => removeSong(song.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                  
+                                      {/* Play now button (host only) */}
+                    {isHost && !song.is_played && song.id !== currentlyPlayingSongId && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => playSong(song.id)}
+                    >
+                      <Play className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         )}
       </CardContent>
